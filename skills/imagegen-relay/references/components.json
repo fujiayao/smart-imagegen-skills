@@ -1,0 +1,15 @@
+{
+  "youmind": {
+    "repository": "https://github.com/YouMind-OpenLab/gpt-image-2-prompts-search",
+    "revision": "d5d124e3662b5861f3e48d4c3c6de0bb4c7071ae",
+    "role": "public_prompt_data_only"
+  },
+  "awakefantasy": {
+    "repository": "https://github.com/AwakeFantasy/relay-imagegen",
+    "revision": "f3be3028b539dd5bb291e72c01baec9d6487934a",
+    "root": "third_party/relay-imagegen",
+    "client_file": "scripts/image_client.py",
+    "sha256": "92549011fccead61d017beba07b22920775807f1a863477288a553c19e8da771",
+    "role": "audited_vendored_image_client_backend"
+  }
+}

@@ -1,0 +1,4 @@
+# Reproducible versions used in local release testing, not a claim of latest versions.
+openai==2.14.0
+Pillow==12.1.0
+httpx==0.28.1

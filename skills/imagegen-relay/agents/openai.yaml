@@ -1,0 +1,6 @@
+interface:
+  display_name: "智能生图skills"
+  short_description: "描述想画什么即可，自动参考 YouMind、识别账号或中转并出图"
+  default_prompt: "用 $imagegen-relay 按我的需求直接生成或编辑图片，自动尝试 YouMind 案例优化、识别账号或中转通道，不要求我选模板或后端，不预设平台风格。需求："
+policy:
+  allow_implicit_invocation: true

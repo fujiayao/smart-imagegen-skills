@@ -1,0 +1,53 @@
+# Credentials and user-local configuration
+.env
+.env.*
+!.env.example
+.secrets/
+**/.secrets/
+auth.json
+config.toml
+config.local.*
+*.local.json
+*.local.toml
+*.dpapi
+*.pem
+*.key
+*.p12
+*.pfx
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+
+# Runtime prompt/reference/image caches and artifacts
+.cache/
+**/.cache/
+outputs/
+**/outputs/
+generated/
+artifacts/
+private/
+*.meta.json
+*.log
+*.tmp
+
+# Python environments and build outputs
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+build/
+dist/
+*.egg-info/
+
+# Editors and OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+Desktop.ini

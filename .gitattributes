@@ -1,0 +1,9 @@
+* text=auto
+*.py text eol=lf
+*.md text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf
+*.json text eol=lf
+
+# Keep audited upstream bytes unchanged: CRLF is included in its pinned hash.
+skills/imagegen-relay/third_party/relay-imagegen/scripts/image_client.py -text whitespace=cr-at-eol
