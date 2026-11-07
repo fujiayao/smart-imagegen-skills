@@ -5,6 +5,7 @@ import ipaddress
 from contextlib import closing
 import json
 import os
+import re
 import sqlite3
 import tomllib
 import urllib.error
@@ -251,6 +252,31 @@ def public_gateway(g: Gateway | None) -> dict:
     return {"source": g.source, "base_url": g.base_url, "has_api_key": bool(g.api_key), "declared_image_models": image_models(g.catalog)[0] + image_models(g.catalog)[1]}
 
 
+def http_error_diagnostic(exc: urllib.error.HTTPError) -> dict:
+    """Inspect a bounded error body; expose only fixed diagnostic identifiers."""
+    try:
+        if exc.code != 403:
+            return {}
+        raw = exc.read(8192)
+        headers = exc.headers or {}
+        cloudflare = (headers.get("Server", "").strip().lower() == "cloudflare"
+                      or bool(headers.get("CF-Ray", "").strip()))
+        # Cloudflare pages can wrap the error number in an HTML span.
+        text = re.sub(rb"<[^>]*>", b" ", raw)
+        if cloudflare and re.search(rb"\berror(?:\s+code)?\s*:?\s*1010\b", text, re.IGNORECASE):
+            return {"diagnostic": "cloudflare_1010",
+                    "next_action": "diagnose_gateway_client_identity_or_edge_policy"}
+    except Exception:
+        # Diagnostics must never replace the original HTTP status or leak a body.
+        pass
+    finally:
+        try:
+            exc.close()
+        except Exception:
+            pass
+    return {}
+
+
 def discover(route: Route, *, timeout=15, model=None, opener=None) -> dict:
     result = {"mode": route.mode, "status": "unknown", "reason": route.reason, **public_gateway(route.gateway), "alternatives": route.alternatives}
     if route.mode == "native":
@@ -260,7 +286,7 @@ def discover(route: Route, *, timeout=15, model=None, opener=None) -> dict:
         return {**result, "next_action": "clarify_mode_or_configure"}
     if not g.api_key:
         return {**result, "status": "need_credentials", "next_action": "hidden_credential_input"}
-    request = urllib.request.Request(g.base_url + "/models", headers={"Authorization": "Bearer " + g.api_key, "Accept": "application/json"})
+    request = urllib.request.Request(g.base_url + "/models", headers={"Authorization": "Bearer " + g.api_key, "Accept": "application/json", "User-Agent": "imagegen-relay/1.0"})
     try:
         opener = opener or urllib.request.build_opener(NoRedirect())
         with opener.open(request, timeout=timeout) as response:
@@ -282,9 +308,10 @@ def discover(route: Route, *, timeout=15, model=None, opener=None) -> dict:
                 raise ValueError("invalid model entries")
     except urllib.error.HTTPError as exc:
         code = exc.code
+        diagnostic = http_error_diagnostic(exc)
         status = "authentication_failed" if code == 401 else "permission_denied" if code == 403 else "model_list_unavailable" if code in (404, 405, 501) else "rate_limited" if code == 429 else "gateway_error"
         declared, other = image_models(g.catalog)
-        return {**result, "status": status, "http_status": code, "unverified_models": declared, "other_image_models": other, "next_action": "diagnose_or_confirm_explicit_model"}
+        return {**result, "status": status, "http_status": code, "unverified_models": declared, "other_image_models": other, "next_action": "diagnose_or_confirm_explicit_model", **diagnostic}
     except (urllib.error.URLError, OSError, TimeoutError):
         return {**result, "status": "network_error", "next_action": "diagnose_network_not_new_key"}
     except (ValueError, TypeError):
