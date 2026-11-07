@@ -48,9 +48,12 @@ class TrackedBody(io.BytesIO):
 
 class IdentityTransport(urllib.request.HTTPSHandler):
     """Exercise urllib's real default headers without opening any socket."""
-    def __init__(self):
+    def __init__(self, *, code=200, body=b'{"data":[{"id":"gpt-image-2"}]}', response_headers=None):
         super().__init__()
         self.requests = []
+        self.code = code
+        self.body = TrackedBody(body)
+        self.response_headers = response_headers if response_headers is not None else headers(Content_Type="application/json")
 
     def https_open(self, request):
         self.requests.append(request)
@@ -60,10 +63,9 @@ class IdentityTransport(urllib.request.HTTPSHandler):
                 io.BytesIO(b"error code: 1010"),
             )
         response = urllib.response.addinfourl(
-            io.BytesIO(b'{"data":[{"id":"gpt-image-2"}]}'),
-            headers(Content_Type="application/json"), request.full_url, 200,
+            self.body, self.response_headers, request.full_url, self.code,
         )
-        response.msg = "OK"
+        response.msg = "OK" if self.code == 200 else "Upstream error"
         return response
 
 
@@ -91,7 +93,7 @@ class GatewayHttpIdentityTests(unittest.TestCase):
 
     def test_default_urllib_identity_blocked_honest_identity_succeeds_once(self):
         transport = IdentityTransport()
-        opener = urllib.request.build_opener(gateway.NoRedirect(), transport)
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), gateway.NoRedirect(), transport)
         old_request = urllib.request.Request(URL, headers={"Authorization": "Bearer " + DUMMY, "Accept": "application/json"})
         with self.assertRaises(urllib.error.HTTPError) as caught:
             opener.open(old_request)
@@ -107,6 +109,81 @@ class GatewayHttpIdentityTests(unittest.TestCase):
         self.assertEqual(request.get_header("User-agent"), UA)
         self.assertEqual(request.get_header("Authorization"), "Bearer " + DUMMY)
         self.assertEqual(request.get_header("Accept"), "application/json")
+
+    def discover_with_transport(self, **response_options):
+        transport = IdentityTransport(**response_options)
+        self.addCleanup(transport.body.close)
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), gateway.NoRedirect(), transport)
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            report = gateway.discover(self.route(), opener=opener)
+        self.assertEqual(len(transport.requests), 1, "Discovery must not retry")
+        request = transport.requests[0]
+        self.assertEqual(request.full_url, URL)
+        self.assertEqual(request.get_method(), "GET")
+        self.assertEqual(request.get_header("User-agent"), UA)
+        self.assertEqual(request.get_header("Authorization"), "Bearer " + DUMMY)
+        self.assertEqual(request.get_header("Accept"), "application/json")
+        self.assertTrue(transport.body.closed, "Response must always be closed")
+        output = json.dumps(report) + stdout.getvalue() + stderr.getvalue()
+        self.assertNotIn(DUMMY, output)
+        self.assertNotIn("private", output)
+        return report, transport.body
+
+    def test_model_discovery_ready_with_or_without_cloudflare_once(self):
+        for signal in (headers(Server="cloudflare", CF_Ray="private-ray"), headers(Server="nginx"), headers()):
+            with self.subTest(signal=list(signal.keys())):
+                signal["Content-Type"] = "application/json"
+                report, _ = self.discover_with_transport(response_headers=signal)
+                self.assertEqual(report["status"], "ready")
+                self.assertEqual(report["model"], "gpt-image-2")
+                self.assertEqual(report["image_models"], ["gpt-image-2"])
+                self.assertEqual(report["evidence"], "live_openai_models_list")
+                self.assertEqual(report["next_action"], "generate_or_edit")
+                self.assertNotIn("diagnostic", report)
+
+    def test_ordinary_http_errors_preserved_with_or_without_cloudflare_once(self):
+        statuses = (
+            (401, "authentication_failed"),
+            (403, "permission_denied"),
+            (429, "rate_limited"),
+            (500, "gateway_error"),
+            (501, "model_list_unavailable"),
+            (502, "gateway_error"),
+            (503, "gateway_error"),
+            (504, "gateway_error"),
+        )
+        signals = (headers(Server="cloudflare"), headers(CF_Ray="private-ray"), headers(Server="nginx"), headers())
+        body = json.dumps({"error": {"message": "private upstream rejection " + DUMMY}}).encode()
+        for signal in signals:
+            for code, status in statuses:
+                with self.subTest(code=code, signal=list(signal.items())):
+                    report, stream = self.discover_with_transport(code=code, body=body, response_headers=signal)
+                    self.assertEqual(report["status"], status)
+                    self.assertEqual(report["http_status"], code)
+                    self.assertEqual(report["next_action"], "diagnose_or_confirm_explicit_model")
+                    self.assertNotIn("diagnostic", report)
+                    self.assertNotIn("model", report)
+                    self.assertEqual(stream.limits, [8192] if code == 403 else [])
+
+    def test_cloudflare_200_non_json_challenge_is_invalid_without_retry(self):
+        bodies = (
+            b"<!doctype html><html><title>Just a moment...</title><body>Checking your browser</body></html>",
+            b"<!doctype html><html><h1>Error <span>1010</span></h1></html>",
+        )
+        for signal in (headers(Server="cloudflare"), headers(CF_Ray="private-ray")):
+            signal["Content-Type"] = "text/html"
+            for body in bodies:
+                with self.subTest(body=body, signal=list(signal.keys())):
+                    report, stream = self.discover_with_transport(
+                        body=body + b" private " + DUMMY.encode(), response_headers=signal,
+                    )
+                    self.assertEqual(report["status"], "invalid_model_list")
+                    self.assertEqual(report["next_action"], "diagnose_gateway_response")
+                    self.assertNotIn("diagnostic", report)
+                    self.assertNotIn("model", report)
+                    self.assertNotIn("evidence", report)
+                    self.assertEqual(stream.limits, [4 * 1024 * 1024 + 1])
 
     def test_cloudflare_1010_is_safe_diagnostic_not_auth_failure(self):
         for body in (b"Error1010", b"error code: 1010", b"<h1>Error <span>1010</span></h1>"):
